@@ -1,31 +1,46 @@
 <#
 .SYNOPSIS
-    Script installs a specified application using the Windows Package Manager (winget) based on a mandatory parameter "WingetAppID".
+    Script installs or uninstalls specified application using the Windows Package Manager (winget) based on a mandatory parameter "WingetAppID".
 
 .DESCRIPTION
     The script requires a mandatory parameter "WingetAppID" which is the application identifier for winget.
-    It includes a function to capture important information about the application and ensures that the environment is suitable for installation.
-    The script is designed to be executed in a Windows environment with PowerShell.
+    It includes a function to capture important information about the application and ensures that the environment is suitable for installation or uninstallation.
+    While the script is generally effective with most applications, it is imperative to perform extensive testing prior to deployment. 
+        For instance, issues were encountered when silently uninstalling certain applications, such as Citrix Workspace. 
+        Solutions and community discussions, such as the one found at https://www.reddit.com/r/sysadmin/comments/144jle7/winget_silent_uninstall_citrixworkspace/, 
+        can provide valuable insights for handling such exceptions.
+    The script was designed to be distributed via Win32App using Intune.
 
 .PARAMETER WingetAppID
-    The application identifier for the Windows Package Manager (winget) to install the application.
+    The application identifier for the Windows Package Manager (winget) to install or uninstall the application.
+
+.PARAMETER Uninstall
+    Indicates that the script should uninstall the application, rather than install it.
 
 .EXAMPLE
     .\Install_WingetApp.ps1 -WingetAppID "Your.ApplicationID"
     Installs the application associated with "Your.ApplicationID" using Winget, assuming Winget is available on the device.
 
+.EXAMPLE
+    .\Install_WingetApp.ps1 -WingetAppID "Microsoft.Teams" -Uninstall
+    This example uninstalls the Microsoft Teams application without user interaction, using the silent uninstall feature of Winget.
+
 .NOTES
-    This script is provided as-is without any guarantees or warranties. Always ensure you have backups and take necessary precautions when executing scripts, particularly in production environments.
+    This script is provided as-is without any guarantees or warranties. Always ensure you have backups and take necessary precautions when executing scripts, particularly in production environments. Due to the varying nature of application installers, some applications may not uninstall silently as expected. It is recommended to test the script thoroughly with each application, especially those known to have complex uninstallation routines.
 
 .LAST MODIFIED
     November 9th, 2023
 
 #>
 
+
 [CmdletBinding()]
 param (
-    [Parameter(Mandatory)]
-    [string]$WingetAppID
+    [Parameter(Mandatory=$true)]
+    [string]$WingetAppID,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$Uninstall
 )
 
 #region Functions
@@ -560,6 +575,172 @@ function Test-WingetAppID {
 }
 
 
+function Install-WingetApp {
+    <#
+    .SYNOPSIS
+        Installs an application using the Windows Package Manager (winget).
+
+    .DESCRIPTION
+        The Install-WingetApp function installs an application on a Windows machine
+        using the winget command-line tool. It requires the application ID as input
+        and optionally takes a path to the winget executable. If the path is not provided,
+        it attempts to locate winget automatically. The function returns an object containing
+        the result of the installation and a summary of the operation.
+
+    .PARAMETER AppID
+        The ID of the application to install, as recognized by winget.
+
+    .PARAMETER WingetPath
+        The full path to the winget executable. If not provided, the function will attempt to locate it.
+
+    .EXAMPLE
+        $result = Install-WingetApp -AppID "Microsoft.VisualStudioCode" -WingetPath "C:\path\to\winget.exe"
+
+    .OUTPUTS
+        PSCustomObject containing the result code and a summary of the installation process.
+    #>
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$AppID,
+
+        [string]$WingetPath
+    )
+
+    # Initialize the detect summary for this function
+    $functionDetectSummary = @()
+
+    # Attempt to locate winget if the path is not provided
+    if (-not $WingetPath) {
+        $WingetPath = (Get-Command winget).Source
+    }
+
+    # Try to install the application using winget
+    try {
+        # Create a temporary file to capture the output of the installation process
+        $tempFile = New-TemporaryFile
+        Write-Host "Initiating App $AppID Installation"
+
+        # Start the winget process with the appropriate arguments for silent installation
+        $processResult = Start-Process -FilePath "$WingetPath" -ArgumentList "install -e --id `"$AppID`" --scope=machine --silent --accept-package-agreements --accept-source-agreements --force" -NoNewWindow -Wait -RedirectStandardOutput $tempFile.FullName -PassThru
+
+        # Capture the exit code and output from the winget process
+        $exitCode = $processResult.ExitCode
+        $installInfo = Get-Content $tempFile.FullName
+        Remove-Item $tempFile.FullName
+
+        # Check the exit code to determine if the installation was successful
+        if ($exitCode -eq 0) {
+            Write-Host "Winget successfully installed application."
+            $functionDetectSummary += "Installed $AppID via Winget. "
+            $result = 0
+        } else {
+            Write-Host "Error during installation, exit code: $exitCode."
+            $functionDetectSummary += "Error during installation, exit code: $exitCode. "
+            $result = 1
+        }
+    }
+    catch {
+        # Catch any exceptions that occur during the installation process
+        Write-Host "Encountered an error during installation: $_"
+        $functionDetectSummary += "Installation failed with error: $_ "
+        $result = 1
+    }
+
+    # Return a custom object with both result and detect summary
+    return [PSCustomObject]@{
+        Result = $result
+        DetectSummary = $functionDetectSummary
+    }
+}
+
+
+function Uninstall-WingetApp {
+    <#
+    .SYNOPSIS
+        Uninstalls an application using the Windows Package Manager (winget) with an option for custom uninstall commands.
+
+    .DESCRIPTION
+        The Uninstall-WingetApp function is designed to uninstall applications from a Windows machine
+        using the winget command-line tool. While it works with most applications, it is crucial to conduct
+        thorough testing before deployment. Certain applications, in my case, like Citrix Workspace, may not support
+        silent uninstallation through winget directly. In such cases, refer to custom solutions or alternative
+        methods of silent uninstallation. 
+        
+        An example of troubleshooting the silent uninstallation of Citrix Workspace
+        can be found at the following URL: https://www.reddit.com/r/sysadmin/comments/144jle7/winget_silent_uninstall_citrixworkspace/
+
+    .PARAMETER AppID
+        The ID of the application to uninstall, as recognized by winget.
+
+    .PARAMETER WingetPath
+        The full path to the winget executable. If not provided, the function will attempt to locate it.
+
+    .EXAMPLE
+        $result = Uninstall-WingetApp -AppID "Microsoft.VisualStudioCode" -WingetPath "C:\path\to\winget.exe"
+
+    .OUTPUTS
+        PSCustomObject containing the result code and a summary of the uninstallation process.
+
+    .NOTES
+        It is recommended to verify the behavior of the uninstallation process with each specific application.
+        For applications with known issues consult external resources or community forums
+        for potential workarounds and script modifications.
+    #>
+
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$AppID,
+
+        [string]$WingetPath
+    )
+
+    # Initialize the detect summary for this function
+    $functionDetectSummary = @()
+
+    # Attempt to locate winget if the path is not provided
+    if (-not $WingetPath) {
+        $WingetPath = (Get-Command winget).Source
+    }
+
+    # Try to uninstall the application using winget
+    try {
+        # Create a temporary file to capture the output of the uninstallation process
+        $tempFile = New-TemporaryFile
+        Write-Host "Initiating App $AppID Uninstallation"
+
+        # Start the winget process with the appropriate arguments for silent uninstallation
+        $processResult = Start-Process -FilePath "$WingetPath" -ArgumentList "uninstall --id `"$AppID`" --silent --force" -NoNewWindow -Wait -RedirectStandardOutput $tempFile.FullName -PassThru
+
+        # Capture the exit code and output from the winget process
+        $exitCode = $processResult.ExitCode
+        $uninstallInfo = Get-Content $tempFile.FullName
+        Remove-Item $tempFile.FullName
+
+        # Check the exit code to determine if the uninstallation was successful
+        if ($exitCode -eq 0) {
+            Write-Host "Winget successfully uninstalled application."
+            $functionDetectSummary += "Uninstalled $AppID via Winget. "
+            $result = 0
+        } else {
+            Write-Host "Error during uninstallation, exit code: $exitCode."
+            $functionDetectSummary += "Application may not be installed or other error occurred, exit code: $exitCode. "
+            $result = 1
+        }
+    }
+    catch {
+        # Catch any exceptions that occur during the uninstallation process
+        Write-Host "Encountered an error during uninstallation: $_"
+        $functionDetectSummary += "Uninstallation failed with error: $_ "
+        $result = 1
+    }
+
+    # Return a custom object with both result and detect summary
+    return [PSCustomObject]@{
+        Result = $result
+        DetectSummary = $functionDetectSummary
+    }
+}
+
 
 #endregion Functions
 
@@ -626,35 +807,20 @@ if (-not $appExists) {
     Write-Host "Found App $WingetAppID in Winget repository. "
 }
 
-# Use Winget to install the desired software
+# Use Winget to install or uninstall desired software
 if ($result -eq 0) {
-    try {
-        $tempFile = New-TemporaryFile
-        Write-Host "Initiating App $WingetAppID Installation"
-        $processResult = Start-Process -FilePath "$wingetPath" -ArgumentList "install -e --id ""$WingetAppID"" --scope=machine --silent --accept-package-agreements --accept-source-agreements --force" -NoNewWindow -Wait -RedirectStandardOutput $tempFile.FullName -PassThru
-
-        $exitCode = $processResult.ExitCode
-        $installInfo = Get-Content $tempFile.FullName
-        Remove-Item $tempFile.FullName
-
-        Write-Host "Winget install exit code: $exitCode"
-        #Write-Host "Winget installation output: $installInfo"          #Remove comment to troubleshoot.
-        
-        if ($exitCode -eq 0) {
-            Write-Host "Winget successfully installed application."
-            $detectSummary += "Installed $WingetAppID via Winget. "
-            $result = 0
-        } else {
-            $detectSummary += "Error during installation, exit code: $exitCode. "
-            $result = 1
-        }
-    }
-    catch {
-        Write-Host "Encountered an error during installation: $_"
-        $detectSummary += "Installation failed with exit code $($processResult.ExitCode). "
-        $result = 1
+    if ($Uninstall) {
+        # Call the uninstall function with the WingetPath parameter
+        $functionResult = Uninstall-WingetApp -AppID $WingetAppID -WingetPath $WingetPath
+    } else {
+        # Call the install function with the WingetPath parameter
+        $functionResult = Install-WingetApp -AppID $WingetAppID -WingetPath $WingetPath
     }
 }
+
+# Extract the result and detect summary from the returned object
+$result = $functionResult.Result
+$detectSummary += $functionResult.DetectSummary
 
 # Simplify reading in the AgentExecutor Log
 Write-Host `n`n
