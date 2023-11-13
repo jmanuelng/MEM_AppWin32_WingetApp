@@ -542,7 +542,7 @@ function Test-WingetAppID {
             # Determine the winget command based on whether a custom path is provided
             $wingetCommand = if ([string]::IsNullOrWhiteSpace($WingetPath)) { "winget" } else { $WingetPath }
 
-            # Execute winget command and capture the output
+            # Execute winget command to search for AppID
             $processInfo = New-Object System.Diagnostics.ProcessStartInfo
             $processInfo.FileName = $wingetCommand
             $processInfo.Arguments = "search --id $AppID"
@@ -572,6 +572,15 @@ function Test-WingetAppID {
             # Check if AppID exists in the repository
             if ($wingetOutput -match ".*\b$AppID\b.*") {
                 $fnResult = $true
+            } 
+            # Check for terms acceptance prompt
+            elseif ($wingetOutput -match "Do you agree to all the source agreements terms?") {
+                # Accept the terms
+                $processInfo.Arguments = "upgrade --accept-source-agreements"
+                $process.Start() | Out-Null
+                $process.WaitForExit($timeout) | Out-Null
+                Write-Warning "Accepted the terms of the 'msstore' source. Please rerun the script."
+                $fnResult = $false
             } elseif ($wingetOutput -match "No package found matching input criteria") {
                 Write-Warning "$AppID package not found."
                 $fnResult = $false
