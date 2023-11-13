@@ -146,10 +146,12 @@ function Find-WingetPath {
             
             # Try to find winget.exe using Get-ChildItem
             $items = Get-ChildItem -Path $location -ErrorAction Stop
-            if ($items) {
-                Write-Host "Found Winget at: $items"
-                return $items[0].FullName
-                break
+            if ($items -and $items.Count -gt 0) {
+                $wingetPath = $items[0].FullName
+                Write-Host "Found Winget at: $wingetPath"
+                return $wingetPath
+            } else {
+                Write-Host "Winget not found in location: $location"
             }
         }
         catch {
@@ -482,8 +484,17 @@ function Install-WingetAsSystem {
     Register-ScheduledTask RunScript -InputObject $task
     Start-ScheduledTask -TaskName RunScript
 
-    # Wait for the task to complete
-    Start-Sleep -Seconds 120
+    # Initialize a loop to check the task status
+    do {
+        # Retrieve the current status of the scheduled task
+        $taskStatus = (Get-ScheduledTask -TaskName RunScript).State
+
+        # Check if the task is still running
+        if ($taskStatus -eq 'Running') {
+            # Task is still running, wait for a specified time before checking again
+            Start-Sleep -Seconds 30
+        }
+    } while ($taskStatus -eq 'Running')
 
     # Unregister and remove the scheduled task and script file
     Unregister-ScheduledTask -TaskName RunScript -Confirm:$false
@@ -499,7 +510,7 @@ function Test-WingetAppID {
     .DESCRIPTION
         This PowerShell function uses the winget CLI to search for a specified AppID in the winget repository.
         It returns $true if the AppID exists, and $false if it does not. An optional parameter allows specifying
-        a custom path to the winget executable.
+        a custom path to the winget executable. The function is updated to better handle execution under the System account.
 
     .PARAMETER AppID
         The AppID of the software package to check in the winget repository.
@@ -521,7 +532,7 @@ function Test-WingetAppID {
 
     .NOTES
         Requires the winget CLI to be installed. If WingetPath is not provided, winget must be accessible in the system PATH.
-        The function is designed to work across different Windows environments and OS languages.
+        The function is designed to work across different Windows environments and OS languages, including under the System account.
 
     #>
     [CmdletBinding()]
@@ -539,24 +550,17 @@ function Test-WingetAppID {
             # Determine the winget command based on whether a custom path is provided
             $wingetCommand = if ([string]::IsNullOrWhiteSpace($WingetPath)) { "winget" } else { $WingetPath }
 
-            # Use Start-Process to execute winget and capture the output
-            $processInfo = Start-Process -FilePath $wingetCommand -ArgumentList "search", "--id", $AppID -NoNewWindow -Wait -PassThru -RedirectStandardOutput "$env:TEMP\winget_output.txt" -RedirectStandardError "$env:TEMP\winget_error.txt"
-
-            # Read the output from the files
-            $wingetOutput = Get-Content -Path "$env:TEMP\winget_output.txt"
-            $wingetError = Get-Content -Path "$env:TEMP\winget_error.txt"
-
-            # Clean up the temporary files
-            Remove-Item "$env:TEMP\winget_output.txt"
-            Remove-Item "$env:TEMP\winget_error.txt"
+            # Execute winget command and capture the output
+            $wingetOutput = & $wingetCommand search --id $AppID | Out-String
 
             # Check if winget command was successful
-            if ($wingetError -like "*No package found matching input criteria.*" -or $wingetOutput -like "*No installed package found matching input criteria.*") {
-                # AppID does not exist in the repository
-                return $false
-            } elseif ($wingetOutput -like "*$AppID*") {
+            if ($wingetOutput -match ".*\b$AppID\b.*") {
                 # AppID exists in the repository
                 return $true
+            } elseif ($wingetOutput -match ".*No package found matching input criteria.*" -or $wingetOutput -match ".*No installed package found matching input criteria.*") {
+                # AppID does not exist in the repository
+                Write-Warning "$AppID package not found."
+                return $false
             } else {
                 # An unexpected output from winget, could be an error or change in winget output format
                 Write-Warning "Unexpected output from winget: $wingetOutput"
@@ -599,6 +603,7 @@ function Install-WingetApp {
     .OUTPUTS
         PSCustomObject containing the result code and a summary of the installation process.
     #>
+    [CmdletBinding()]
     param (
         [Parameter(Mandatory=$true)]
         [string]$AppID,
@@ -686,7 +691,7 @@ function Uninstall-WingetApp {
         For applications with known issues consult external resources or community forums
         for potential workarounds and script modifications.
     #>
-
+    [CmdletBinding()]
     param (
         [Parameter(Mandatory=$true)]
         [string]$AppID,
@@ -777,7 +782,7 @@ if ($vcInstalled) {
 $wingetPath = (Get-Command -Name winget -ErrorAction SilentlyContinue).Source
 
 if (-not $wingetPath) {
-    Write-Host "Winget not detected, attempting to locate in system..."
+    Write-Host "Winget not detected, attempting to locate in device..."
     $wingetPath = Find-WingetPath
 }
 
@@ -799,6 +804,7 @@ if (-not $wingetPath) {
 }
 
 # Validate if requested App exists or is available in Winget repository
+Write-Host "Verifying application $WingetAppID exists in repository."
 $appExists = Test-WingetAppID -AppID $WingetAppID -WingetPath $wingetPath
 if (-not $appExists) {
     $detectSummary += "Winget App ID not found. "
@@ -811,9 +817,11 @@ if (-not $appExists) {
 if ($result -eq 0) {
     if ($Uninstall) {
         # Call the uninstall function with the WingetPath parameter
+        Write-Host "Uninstalling Winget application with AppID: $WingetAppID"
         $functionResult = Uninstall-WingetApp -AppID $WingetAppID -WingetPath $WingetPath
     } else {
         # Call the install function with the WingetPath parameter
+        Write-Host "Starting installation of the Winget application with AppID: $WingetAppID"
         $functionResult = Install-WingetApp -AppID $WingetAppID -WingetPath $WingetPath
     }
 }
