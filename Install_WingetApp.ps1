@@ -505,19 +505,23 @@ function Install-WingetAsSystem {
 function Test-WingetAppID {
     <#
     .SYNOPSIS
-        Checks if a given AppID exists in the winget repository.
+        Checks if a given AppID exists in the winget repository and handles terms acceptance.
 
     .DESCRIPTION
         This PowerShell function uses the winget CLI to search for a specified AppID in the winget repository.
-        It returns $true if the AppID exists, and $false if it does not. An optional parameter allows specifying
-        a custom path to the winget executable. The function is updated to better handle execution under the System account
-        and includes a timeout feature.
+        It returns $true if the AppID exists, and $false if it does not. The function uses Start-Process for
+        executing the winget command and includes a 90-second timeout for the process. It also handles the scenario
+        where the user must accept the source agreements terms and then reattempts the search.
 
     .PARAMETER AppID
         The AppID of the software package to check in the winget repository.
 
     .PARAMETER WingetPath
         Optional. The full path to the winget executable. If not provided, it assumes winget is in the system PATH.
+
+    .EXAMPLE
+        Test-WingetAppID -AppID "Microsoft.VisualStudioCode"
+        Returns $true if the Microsoft.VisualStudioCode package exists in the winget repository.
 
     .NOTES
         Requires the winget CLI to be installed. If WingetPath is not provided, winget must be accessible in the system PATH.
@@ -542,50 +546,65 @@ function Test-WingetAppID {
             # Determine the winget command based on whether a custom path is provided
             $wingetCommand = if ([string]::IsNullOrWhiteSpace($WingetPath)) { "winget" } else { $WingetPath }
 
-            # Execute winget command to search for AppID
-            $processInfo = New-Object System.Diagnostics.ProcessStartInfo
-            $processInfo.FileName = $wingetCommand
-            $processInfo.Arguments = "search --id $AppID"
-            $processInfo.RedirectStandardOutput = $true
-            $processInfo.UseShellExecute = $false
-            $processInfo.CreateNoWindow = $true
+            # Function to execute winget command with a manual timeout
+            function Invoke-WingetCommand {
+                param (
+                    [string]$Arguments
+                )
 
-            $process = New-Object System.Diagnostics.Process
-            $process.StartInfo = $processInfo
+                # Create a temporary file for output redirection
+                $tempFile = New-TemporaryFile
 
-            # Start the process
-            $process.Start() | Out-Null
+                # Start the winget process
+                $process = Start-Process -FilePath $wingetCommand -ArgumentList $Arguments -NoNewWindow -PassThru -ErrorAction Stop -RedirectStandardOutput $tempFile.FullName
 
-            # Wait for the process to exit with a timeout
-            $timeout = 90000 # 90 seconds
-            $process.WaitForExit($timeout) | Out-Null
+                # Implement a manual timeout (90 seconds)
+                $timeout = 90
+                $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+                while ($stopwatch.Elapsed.TotalSeconds -lt $timeout -and !$process.HasExited) {
+                    Start-Sleep -Milliseconds 500
+                }
+                $stopwatch.Stop()
 
-            if (!$process.HasExited) {
-                Write-Warning "Process did not complete within the timeout period."
-                $process.Kill() | Out-Null
-                $fnResult = $false
+                if (!$process.HasExited) {
+                    $process.Kill()
+                    Write-Warning "Process did not complete within the timeout period."
+                    return $null
+                }
+
+                # Read output from the temporary file
+                $output = Get-Content $tempFile.FullName
+
+                # Clean up by removing the temporary file
+                Remove-Item $tempFile -Force
+
+                return $output
             }
 
-            # Read output
-            $wingetOutput = $process.StandardOutput.ReadToEnd()
+            # Run winget search command
+            $wingetOutput = Invoke-WingetCommand -Arguments "search --id $AppID"
 
-            # Check if AppID exists in the repository
+            # Check if AppID exists in the repository, or if terms acceptance is required
             if ($wingetOutput -match ".*\b$AppID\b.*") {
                 $fnResult = $true
-            } 
-            # Check for terms acceptance prompt
-            elseif ($wingetOutput -match "Do you agree to all the source agreements terms?") {
-                # Accept the terms
-                $processInfo.Arguments = "upgrade --accept-source-agreements"
-                $process.Start() | Out-Null
-                $process.WaitForExit($timeout) | Out-Null
-                Write-Warning "Accepted the terms of the 'msstore' source. Please rerun the script."
-                $fnResult = $false
+            } elseif ($wingetOutput -match "Do you agree to all the source agreements terms?" -or [string]::IsNullOrWhiteSpace($wingetOutput)) {
+                # Accept the terms and rerun the script
+                Invoke-WingetCommand -Arguments "upgrade --accept-source-agreements"
+                Write-Warning "Accepted the terms of the 'msstore' source. Reattempting the search."
+
+                # Reattempt the search after accepting the terms
+                $wingetOutput = Invoke-WingetCommand -Arguments "search --id $AppID"
+                if ($wingetOutput -match ".*\b$AppID\b.*") {
+                    $fnResult = $true
+                } else {
+                    Write-Warning "The AppID '$AppID' could not be found after accepting the terms."
+                    $fnResult = $false
+                }
             } elseif ($wingetOutput -match "No package found matching input criteria") {
                 Write-Warning "$AppID package not found."
                 $fnResult = $false
             } else {
-                Write-Warning "An error occurred while executing winget: $wingetOutput. "
+                Write-Warning "An error occurred while executing winget: $wingetOutput"
                 $fnResult = $false
             }
         } catch {
@@ -602,6 +621,7 @@ function Test-WingetAppID {
     # Return the result
     return $fnResult
 }
+
 
 
 
