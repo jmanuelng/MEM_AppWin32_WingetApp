@@ -58,57 +58,57 @@ function Invoke-Ensure64bitEnvironment {
 function Find-WingetPath {
     <#
     .SYNOPSIS
-        Locates the winget.exe executable within a system.
+        Locates and verifies the accessibility of the winget.exe executable within a Windows system.
 
     .DESCRIPTION
-        Finds the path of the `winget.exe` executable on a Windows system. 
-        Aimed at finding Winget when main script is executed as SYSTEM, but will also work under USER
-        
-        Windows Package Manager (`winget`) is a command-line tool that facilitates the 
-        installation, upgrade, configuration, and removal of software packages. Identifying the 
-        exact path of `winget.exe` allows for execution (installations) under SYSTEM context.
+        This function is designed to find the path of the `winget.exe` executable on a Windows system 
+         and ensure it is accessible for execution. 
+        Used for scripts that need to interact with the Windows Package Manager (winget) 
+         in environments where the script may be running under different user contexts, including SYSTEM and USER.
 
-        METHOD
+        The Windows Package Manager (winget) is a command-line utility that simplifies the installation,
+         upgrade, configuration, and removal of software packages. Accurately locating `winget.exe` and
+         verifying its accessibility have probed to be crucail for enabling automated software management tasks, 
+         especially when executed under the SYSTEM context.
+
+        Methodology:
         1. Defining Potential Paths:
-        - Specifies potential locations of `winget.exe`, considering:
-            - Standard Program Files directory (64-bit systems).
-            - 32-bit Program Files directory (32-bit applications on 64-bit systems).
-            - Local application data directory.
-            - Current user's local application data directory.
-        - Paths may utilize wildcards (*) for flexible directory naming, e.g., version-specific folder names.
+        - The function defines a list of potential file paths where `winget.exe` might be located. 
+          These paths include:
+            - The standard Program Files directory, typically used on 64-bit systems.
+            - The 32-bit Program Files directory, for 32-bit applications on 64-bit systems.
+            - The Local Application Data directory.
+            - The Current User's Local Application Data directory.
+        - These paths may contain wildcards (*) to accommodate flexible directory naming, such as version-specific folder names.
 
-        2. Iterating Through Paths:
-        - Iterates over each potential location.
-        - Resolves paths containing wildcards to their actual path using `Resolve-Path`.
-        - For each valid location, uses `Get-ChildItem` to search for `winget.exe`.
+        2. Iterating Through Paths and Verifying Accessibility:
+            - The function iterates over each potential location, resolving any paths with wildcards to their actual directories.
+            - For each resolved path, it uses `Get-ChildItem` to search for `winget.exe`.
+            - Upon locating `winget.exe`, the function checks if the current context has execution permissions for the file.
+            - If necessary, it attempts to modify the file's Access Control List (ACL) to grant execute permissions.
+            - This step ensures that the located `winget.exe` is not only present but also executable by the script.
 
         3. Returning Results:
-        - If `winget.exe` is located, returns the full path to the executable.
-        - If not found in any location, outputs an error message and returns `$null`.
+            - If `winget.exe` is found and is accessible, the function returns the full path to the executable.
+            - If `winget.exe` is not found or cannot be made accessible, it outputs an error message and returns `$null`.
 
     .EXAMPLE
         $wingetLocation = Find-WingetPath
         if ($wingetLocation) {
-            Write-Output "Winget found at: $wingetLocation"
+            Write-Output "Winget found and accessible at: $wingetLocation"
         } else {
-            Write-Error "Winget was not found on this system."
+            Write-Error "Winget was not found or is not accessible on this system."
         }
 
     .NOTES
-        While this function is designed for robustness, it relies on current naming conventions and
-        structures used by the Windows Package Manager's installation. Future software updates may
-        necessitate adjustments to this function.
-
+ 
     .DISCLAIMER
-        This function and script is provided as-is with no warranties or guarantees of any kind. 
-        Always test scripts and tools in a controlled environment before deploying them in a production setting.
-        
-        This function's design and robustness were enhanced with the assistance of ChatGPT, it's important to recognize that 
-        its guidance, like all automated tools, should be reviewed and tested within the specific context it's being 
-        applied. 
+        This function is provided 'as-is' with no warranties or guarantees. It should be thoroughly tested in a controlled environment before any production use. The design and robustness of this function have been enhanced with the assistance of ChatGPT. However, as with all automated tools and scripts, it is essential to review and test them within their specific application context.
 
     #>
-    # Define possible locations for winget.exe
+
+    # Define potential locations for winget.exe
+    # These locations are the most common paths where winget.exe might be installed.
     $possibleLocations = @(
         "${env:ProgramFiles}\WindowsApps\Microsoft.DesktopAppInstaller*_x64__8wekyb3d8bbwe\winget.exe", 
         "${env:ProgramFiles(x86)}\WindowsApps\Microsoft.DesktopAppInstaller*_8wekyb3d8bbwe\winget.exe",
@@ -116,37 +116,92 @@ function Find-WingetPath {
         "${env:USERPROFILE}\AppData\Local\Microsoft\WindowsApps\winget.exe"
     )
 
-    # Iterate through the potential locations and return the path if found
+    # Function to check and modify permissions
+    # This function attempts to add execute permissions to the winget.exe file.
+    function CheckAndModifyPermissions {
+        param (
+            [string]$filePath
+        )
+        try {
+            Write-Host "Verifying execution permissions for $filePath"
+            # Get the current Access Control List (ACL) of the file
+            $acl = Get-Acl $filePath
+            # Define the execution permission
+            $executionPermission = [System.Security.AccessControl.FileSystemRights]::Execute
+    
+            # Get the current user's account
+            $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            $currentUserAccount = New-Object System.Security.Principal.NTAccount($currentUser)
+    
+            # Check if the current user already has execute permissions
+            $accessRules = $acl.Access | Where-Object { $_.IdentityReference -eq $currentUserAccount }
+            $hasExecutePermission = $accessRules | Where-Object { $_.FileSystemRights -match 'Execute' -or $_.FileSystemRights -match 'FullControl' }
+    
+            if ($hasExecutePermission) {
+                Write-Host "$currentUser already has execute permissions."
+                return $true
+            }
+    
+            # If the current user does not have the necessary permissions, attempt to modify the ACL
+            $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule($currentUserAccount, $executionPermission, 'Allow')
+            $acl.AddAccessRule($accessRule)
+            Set-Acl -Path $filePath -AclObject $acl
+            return $true
+        }
+        catch {
+            Write-Warning "Failed to modify permissions for: $filePath"
+            return $false
+        }
+    }
+       
+
+    # Iterate through potential locations to find and verify winget.exe
+    # This loop checks each location in the list for the presence of winget.exe.
     foreach ($location in $possibleLocations) {
         try {
-            # Resolve path if it contains a wildcard
+            # Check if the location contains a wildcard and resolve it
             if ($location -like '*`**') {
+                # Resolve the wildcard path to actual directory paths
                 $resolvedPaths = Resolve-Path $location -ErrorAction SilentlyContinue
-                # If the path is resolved, update the location for Get-ChildItem
+                # Update the location with the resolved path if available
                 if ($resolvedPaths) {
                     $location = $resolvedPaths.Path
                 }
                 else {
-                    # If path couldn't be resolved, skip to the next iteration
+                    # If path couldn't be resolved, inform via write warning
                     Write-Warning "Couldn't resolve path for: $location"
+                    # Skip to the next location if the path cannot be resolved
                     continue
                 }
             }
-            
-            # Try to find winget.exe using Get-ChildItem
+
+            # Search for winget.exe in the resolved location
+            # Get-ChildItem is used to find the winget.exe file in the specified directory.
             $items = Get-ChildItem -Path $location -ErrorAction Stop
-            if ($items) {
-                Write-Host "Found Winget at: $items"
-                return $items[0].FullName
-                break
+            # Iterate through each found item to check and modify permissions
+            if ($items -and $items.Count -gt 0) {
+                # Found a path, saving to variable and informing
+                $wingetPath = $items[0].FullName
+                Write-Host "Found Winget at: $wingetPath"
+                # Check and modify permissions if necessary
+                $hasPermission = CheckAndModifyPermissions -filePath $wingetPath
+                # If the file is accessible, return its path
+                if ($hasPermission) {
+                    Write-Host "Winget found and accessible at: $wingetPath"
+                    return $wingetPath
+                } else {
+                    Write-Host "Unable to confirm Winget execution permissions."
+                }
             }
         }
         catch {
+            # Catch any exceptions during the search and output a warning
             Write-Warning "Couldn't search for winget.exe at: $location"
         }
     }
 
-    Write-Error "Winget wasn't located in any of the specified locations."
+    # If winget.exe is not found in any of the locations, output an error
+    Write-Error "Winget wasn't located or accessible in any of the specified locations."
     return $null
 }
 
