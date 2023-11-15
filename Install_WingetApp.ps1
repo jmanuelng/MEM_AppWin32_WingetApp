@@ -138,7 +138,7 @@ function Find-WingetPath {
             # Get the current Access Control List (ACL) of the file
             $acl = Get-Acl $filePath
             # Define the execution permission
-            $executionPermission = [System.Security.AccessControl.FileSystemRights]::Execute
+            $executionPermission = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute
     
             # Get the current user's account
             $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
