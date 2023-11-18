@@ -3,7 +3,11 @@
     Detects the installation status and version of an application managed by Windows Package Manager (winget) for Microsoft Intune Win32 app deployment.
 
 .DESCRIPTION
-    This script is designed to be used as a detection method in Microsoft Intune for Win32 application deployments. It leverages the Windows Package Manager (winget) to check if a specified application is installed, determines if it is the latest version available, and retrieves the installed version details. The script ensures that the necessary dependencies for winget are present and verifies internet connectivity to essential resources required for winget operations.
+    This script is designed to be used as a detection method in Microsoft Intune for Win32 application deployments. 
+    It leverages the Windows Package Manager (winget) to check if a specified application is installed, determines
+     if it is the latest version available, and retrieves the installed version details. The script ensures that 
+     the necessary dependencies for winget are present and verifies internet connectivity to essential resources
+     required for winget operations.
 
     It is structured into three main functions:
     - Get-WingetAppDetails: Retrieves the installation status and version of the application.
@@ -11,6 +15,29 @@
     - Test-InternetConnectivity: Ensures connectivity to resources needed by winget.
 
     The script outputs a detailed summary of the detection process and exits with a status code that can be used to inform Intune deployment workflows.
+
+    Before deploying this script through Microsoft Intune, modify the $WingetAppID variable in the script 
+    to match the ID of the WinGet application you wish to detect.
+
+    .EXAMPLES OF MODIFYING $WingetAppID
+
+    1. Detecting Microsoft Edge:
+    If deploying Microsoft Edge, find its WinGet App ID (e.g., 'Microsoft.Edge'). 
+    Modify the script as follows:
+    $WingetAppID = "Microsoft.Edge"
+
+    2. Detecting Visual Studio Code:
+    For Visual Studio Code, the WinGet App ID might be 'Microsoft.VisualStudioCode'. 
+    Modify the script like this:
+    $WingetAppID = "Microsoft.VisualStudioCode"
+
+    .FINDING WINGET APP IDS
+    To find the WinGet App ID for a specific application, use the WinGet command: winget search <ApplicationName>
+    This will list available packages and their IDs.
+
+    .SCRIPT USAGE IN INTUNE
+    After modifying the $WingetAppID, the script is ready to be used in Microsoft Intune as a detection rule 
+    for a Win32 app. 
 
 .PARAMETER WingetAppID
     NOT USED, that was the idea. Win32 Detect script does not take parameters.
@@ -31,23 +58,31 @@
 #>
 
 
+# Modify the following variable with the WinGet App ID of the application you want to detect.
+# Example: $WingetAppID = "Microsoft.Edge" for Microsoft Edge
+$WingetAppID = "<Your-WinGet-App-ID-Here>"
+
 
 #region Functions
 
 function Invoke-Ensure64bitEnvironment {
     <#
     .SYNOPSIS
-        Check if the script is running in a 32-bit or 64-bit environment, and relaunch using 64-bit PowerShell if necessary.
+        Check if the script is running in a 32-bit or 64-bit environment, and relaunch using 64-bit PowerShell if necessary, including original arguments.
 
     .NOTES
         This script checks the processor architecture to determine the environment.
         If it's running in a 32-bit environment on a 64-bit system (WOW64), 
-        it will relaunch using the 64-bit version of PowerShell.
+        it will relaunch using the 64-bit version of PowerShell, preserving the original arguments.
         Place the function at the beginning of the script to ensure a switch to 64-bit when necessary.
     #>
+
+    # Capture the original arguments
+    $scriptArguments = $MyInvocation.Line.replace($MyInvocation.InvocationName,'').Trim()
+
     if ($ENV:PROCESSOR_ARCHITECTURE -eq "x86" -and $ENV:PROCESSOR_ARCHITEW6432 -eq "AMD64") {
-        Write-Output "Detected 32-bit PowerShell on 64-bit system. Relaunching script in 64-bit environment..."
-        Start-Process -FilePath "$ENV:WINDIR\SysNative\WindowsPowershell\v1.0\PowerShell.exe" -ArgumentList "-WindowStyle Hidden -NonInteractive -File `"$($PSCommandPath)`" " -Wait -NoNewWindow
+        Write-Output "Detected 32-bit PowerShell on 64-bit system. Relaunching script in 64-bit environment with original arguments..."
+        Start-Process -FilePath "$ENV:WINDIR\SysNative\WindowsPowershell\v1.0\PowerShell.exe" -ArgumentList "-WindowStyle Hidden -NonInteractive -File `"$($PSCommandPath)`" $scriptArguments" -Wait -NoNewWindow
         exit # Terminate the 32-bit process
     } elseif ($ENV:PROCESSOR_ARCHITECTURE -eq "x86") {
         Write-Output "Detected 32-bit PowerShell on a 32-bit system. Stopping script execution."
@@ -453,7 +488,7 @@ function Test-InternetConnectivity {
 #region Main
 
 #region Variables
-$WingetAppID = "Your.AppID"     # Winget Application ID. 
+$WingetAppID = $WingetAppID     # Winget Application ID. 
                                 #  $WingetAppID HAS to be manually updated, Win32 detect script does not accept parameters.
 $appWinget = $null              # Stores App details
 $WingetAppVer = $null           # For App version

@@ -48,23 +48,28 @@ param (
 function Invoke-Ensure64bitEnvironment {
     <#
     .SYNOPSIS
-        Check if the script is running in a 32-bit or 64-bit environment, and relaunch using 64-bit PowerShell if necessary.
+        Check if the script is running in a 32-bit or 64-bit environment, and relaunch using 64-bit PowerShell if necessary, including original arguments.
 
     .NOTES
         This script checks the processor architecture to determine the environment.
         If it's running in a 32-bit environment on a 64-bit system (WOW64), 
-        it will relaunch using the 64-bit version of PowerShell.
+        it will relaunch using the 64-bit version of PowerShell, preserving the original arguments.
         Place the function at the beginning of the script to ensure a switch to 64-bit when necessary.
     #>
+
+    # Capture the original arguments
+    $scriptArguments = $MyInvocation.Line.replace($MyInvocation.InvocationName,'').Trim()
+
     if ($ENV:PROCESSOR_ARCHITECTURE -eq "x86" -and $ENV:PROCESSOR_ARCHITEW6432 -eq "AMD64") {
-        Write-Output "Detected 32-bit PowerShell on 64-bit system. Relaunching script in 64-bit environment..."
-        Start-Process -FilePath "$ENV:WINDIR\SysNative\WindowsPowershell\v1.0\PowerShell.exe" -ArgumentList "-WindowStyle Hidden -NonInteractive -File `"$($PSCommandPath)`" " -Wait -NoNewWindow
+        Write-Output "Detected 32-bit PowerShell on 64-bit system. Relaunching script in 64-bit environment with original arguments..."
+        Start-Process -FilePath "$ENV:WINDIR\SysNative\WindowsPowershell\v1.0\PowerShell.exe" -ArgumentList "-WindowStyle Hidden -NonInteractive -File `"$($PSCommandPath)`" $scriptArguments" -Wait -NoNewWindow
         exit # Terminate the 32-bit process
     } elseif ($ENV:PROCESSOR_ARCHITECTURE -eq "x86") {
         Write-Output "Detected 32-bit PowerShell on a 32-bit system. Stopping script execution."
         exit # Terminate the script if it's a pure 32-bit system
     }
 }
+
 
 function Find-WingetPath {
     <#
@@ -509,49 +514,50 @@ function Install-WingetAsSystem {
     Install-WinGet
 '@
 
-    # Name for Temp Script.
-    $tmpScript = "WingetScript.ps1"
-    
-    # Ensure the automation directory exists
-    if (!(Test-Path "$env:systemdrive\automation")) {
-        New-Item "$env:systemdrive\automation" -ItemType Directory | Out-Null
+    try {
+        # Create a temporary file in the system temp directory
+        $tempPath = [System.IO.Path]::Combine($env:SystemRoot, 'Temp')
+        $tempFile = [System.IO.Path]::Combine($tempPath, [System.IO.Path]::GetRandomFileName())
+        New-Item -Path $tempFile -ItemType File | Out-Null
+
+        # Write the script block to the temporary file
+        $scriptBlock | Out-File -FilePath $tempFile
+
+        # Create the scheduled task action to run the PowerShell script
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-executionpolicy bypass -WindowStyle minimized -file $tempFile"
+
+        # Create the scheduled task trigger to run at log on
+        $trigger = New-ScheduledTaskTrigger -AtLogOn
+
+        # Get the current user's username to set as the principal of the task
+        $UserId = Get-LoggedOnUser
+        $principal = New-ScheduledTaskPrincipal -UserId $UserId
+
+        # Create the scheduled task
+        $task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal
+
+        # Register and start the scheduled task
+        Register-ScheduledTask RunScript -InputObject $task
+        Start-ScheduledTask -TaskName RunScript
+
+        # Initialize a loop to check the task status
+        do {
+            # Retrieve the current status of the scheduled task
+            $taskStatus = (Get-ScheduledTask -TaskName RunScript).State
+
+            # Check if the task is still running
+            if ($taskStatus -eq 'Running') {
+                # Task is still running, wait for a specified time before checking again
+                Start-Sleep -Seconds 30
+            }
+        } while ($taskStatus -eq 'Running')
+
+        # Unregister and remove the scheduled task and temporary script file
+        Unregister-ScheduledTask -TaskName RunScript -Confirm:$false
+        Remove-Item -Path $tempFile
+    } catch {
+        Write-Error "Error installing Winget as System: $_"
     }
-
-    # Write the script block to a file in the automation directory
-    $scriptBlock | Out-File "$env:systemdrive\automation\$tmpScript"
-
-    # Create the scheduled task action to run the PowerShell script
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-executionpolicy bypass -WindowStyle minimized -file %SYSTEMDRIVE%\automation\$tmpScript"
-
-    # Create the scheduled task trigger to run at log on
-    $trigger = New-ScheduledTaskTrigger -AtLogOn
-
-    # Get the current user's username to set as the principal of the task
-    $UserId = Get-LoggedOnUser
-    $principal = New-ScheduledTaskPrincipal -UserId $UserId
-
-    # Create the scheduled task
-    $task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal
-
-    # Register and start the scheduled task
-    Register-ScheduledTask RunScript -InputObject $task
-    Start-ScheduledTask -TaskName RunScript
-
-    # Initialize a loop to check the task status
-    do {
-        # Retrieve the current status of the scheduled task
-        $taskStatus = (Get-ScheduledTask -TaskName RunScript).State
-
-        # Check if the task is still running
-        if ($taskStatus -eq 'Running') {
-            # Task is still running, wait for a specified time before checking again
-            Start-Sleep -Seconds 30
-        }
-    } while ($taskStatus -eq 'Running')
-
-    # Unregister and remove the scheduled task and script file
-    Unregister-ScheduledTask -TaskName RunScript -Confirm:$false
-    Remove-Item "$env:systemdrive\automation\$tmpScript"
 }
 
 
