@@ -8,6 +8,10 @@ REM 2. Run this script with 'install' or 'uninstall' as an argument. If no argum
 REM    Example: W32WingetApp.cmd install
 REM    Example: W32WingetApp.cmd uninstall
 REM 
+REM Note: It's crucial to follow the correct format for the SET command to ensure the script functions properly. 
+REM       The SET command should not include spaces around the equal sign to avoid creating variables with unintended names or values.
+REM
+REM 
 REM The WingetAppID is set at the top for easy access and modification.
 
 SET WingetAppID=YourAppID

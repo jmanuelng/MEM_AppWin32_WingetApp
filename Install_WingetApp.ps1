@@ -70,6 +70,45 @@ function Invoke-Ensure64bitEnvironment {
     }
 }
 
+function Show-ScriptBanner {
+    <#
+    .SYNOPSIS
+    Displays a banner indicating the action (install or uninstall) and the application ID being managed.
+
+    .DESCRIPTION
+    This function provides a clear, visual indication of the script's current action (either installation or uninstallation) 
+    and the Winget application ID being targeted. It is called at the beginning of the script execution
+    to inform the user about the script's operation. Super useful when troubleshooing.
+
+    .PARAMETER WingetAppID
+    The ID of the Winget application that is being installed or uninstalled. This should be a valid Winget application identifier.
+
+    .PARAMETER Uninstall
+    A switch parameter that determines the action of the script. If present, the script will perform an uninstallation. If omitted, the script defaults to installation.
+
+    .EXAMPLE
+    Show-ScriptBanner -WingetAppID "Microsoft.VisualStudioCode" -Uninstall
+    Displays a banner for uninstalling the application with the ID "Microsoft.VisualStudioCode".
+
+    .EXAMPLE
+    Show-ScriptBanner -WingetAppID "Microsoft.VisualStudioCode"
+    Displays a banner for installing the application with the ID "Microsoft.VisualStudioCode".
+    #>
+    param (
+        [string]$WingetAppID,  # The Winget application ID parameter
+        [switch]$Uninstall     # The switch to determine the action (install/uninstall)
+    )
+
+    # Determine the action based on the Uninstall switch
+    $action = if ($Uninstall) { "Uninstall" } else { "Install" }
+
+    # Display the banner with action and application ID
+    Write-Host "`n=================================================="
+    Write-Host " Winget Application Install/Uninstall Script"
+    Write-Host " Action: $action"  # Shows whether the script will install or uninstall
+    Write-Host " Application ID: $WingetAppID"  # Displays the Winget application ID
+    Write-Host "==================================================`n"
+}
 
 function Find-WingetPath {
     <#
@@ -515,22 +554,35 @@ function Install-WingetAsSystem {
 '@
 
     try {
-        # Create a temporary file in the system temp directory
-        $tempPath = [System.IO.Path]::Combine($env:SystemRoot, 'Temp')
-        $tempFile = [System.IO.Path]::Combine($tempPath, [System.IO.Path]::GetRandomFileName())
-        New-Item -Path $tempFile -ItemType File | Out-Null
+        # Create a temporary file
+        $tempFile = New-TemporaryFile
 
-        # Write the script block to the temporary file
-        $scriptBlock | Out-File -FilePath $tempFile
+        # Create a new file path with the .ps1 extension
+        $ps1FilePath = [System.IO.Path]::ChangeExtension($tempFile.FullName, ".ps1")
+
+        # Rename the temporary file to have a .ps1 extension
+        Rename-Item -Path $tempFile.FullName -NewName $ps1FilePath
+
+        # Write the script block to the temporary file with .ps1 extension
+        $scriptBlock | Out-File -FilePath $ps1FilePath
+
+        # Get the current user's username to set as the principal of the task
+        $UserId = Get-LoggedOnUser
+
+        # Set read and write permissions for $UserId on the .ps1 file
+        $acl = Get-Acl -Path $ps1FilePath
+        $permission = "Read, Write"
+        $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule($UserId, $permission, "Allow")
+        $acl.SetAccessRule($accessRule)
+        Set-Acl -Path $ps1FilePath -AclObject $acl
 
         # Create the scheduled task action to run the PowerShell script
-        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-executionpolicy bypass -WindowStyle minimized -file $tempFile"
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-executionpolicy bypass -WindowStyle minimized -file `"$ps1FilePath`""
 
         # Create the scheduled task trigger to run at log on
         $trigger = New-ScheduledTaskTrigger -AtLogOn
 
-        # Get the current user's username to set as the principal of the task
-        $UserId = Get-LoggedOnUser
+        # Create a scheduled task principal with the user ID
         $principal = New-ScheduledTaskPrincipal -UserId $UserId
 
         # Create the scheduled task
@@ -554,7 +606,7 @@ function Install-WingetAsSystem {
 
         # Unregister and remove the scheduled task and temporary script file
         Unregister-ScheduledTask -TaskName RunScript -Confirm:$false
-        Remove-Item -Path $tempFile
+        Remove-Item -Path $ps1FilePath
     } catch {
         Write-Error "Error installing Winget as System: $_"
     }
@@ -872,6 +924,11 @@ Write-Host `n`n
 
 # Invoke the function to ensure we're running in a 64-bit environment if available
 Invoke-Ensure64bitEnvironment
+
+# Display the script banner
+Show-ScriptBanner -WingetAppID $WingetAppID -Uninstall:$Uninstall
+
+# Notify confirmation of environment running in 64-bit
 Write-Host "Script running in 64-bit environment."
 
 # Find if Visual C++ redistributable is installed using Install-VisualCIfMissing function and capture the result
