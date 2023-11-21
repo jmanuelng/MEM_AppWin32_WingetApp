@@ -34,7 +34,7 @@ For those familiar with Microsoft Intune and PowerShell/CMD scripting:
 4. **Deploying via Microsoft Intune**:
    - Log into the Microsoft Intune portal.
    - Navigate to the 'Apps' section and choose to add a new app.
-   - Select 'Windows app (Win32)' and upload the `.intunewin` file created using the Microsoft Intune Win32 App Packaging Tool. This package should contain the modified `W32Winget.cmd` (by the way you can change the name of the .CMD, but before creating he .intunewin).
+   - Select 'Windows app (Win32)' and upload the `.intunewin` file created using the Microsoft Intune Win32 App Packaging Tool. This package should contain the modified `W32Winget.cmd` (by the way, you can change the name of the .CMD, but before creating the `.intunewin`).
    - Configure the app information, program settings, detection rules, and assignments as per your deployment requirements.
       -  **Install Command**: `W32Winget.cmd install`
       -  **Uninstall Command**: `W32Winget.cmd uninstall`
